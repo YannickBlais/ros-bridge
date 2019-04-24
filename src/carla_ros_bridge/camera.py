@@ -67,6 +67,7 @@ class Camera(Sensor):
         """
         if topic_prefix is None:
             topic_prefix = 'camera'
+        self.topic_name_id = carla_actor.id
         super(Camera, self).__init__(carla_actor=carla_actor,
                                      parent=parent,
                                      topic_prefix=topic_prefix)
@@ -124,9 +125,9 @@ class Camera(Sensor):
         cam_info = self._camera_info
         cam_info.header = img_msg.header
 
-        self.publish_ros_message(self.topic_name() + '/camera_info', cam_info)
+        self.publish_ros_message(self.topic_name() + '/' + str(self.topic_name_id) + '/camera_info', cam_info)
         self.publish_ros_message(
-            self.topic_name() + '/' + self.get_image_topic_name(), img_msg)
+            self.topic_name() + '/' + str(self.topic_name_id) + '/' + self.get_image_topic_name(), img_msg)
 
     def get_tf_msg(self):
         """
@@ -197,6 +198,7 @@ class RgbCamera(Camera):
         """
         if topic_prefix is None:
             topic_prefix = 'camera/rgb'
+        print("creating a RGB camera")
         super(RgbCamera, self).__init__(carla_actor=carla_actor,
                                         parent=parent,
                                         topic_prefix=topic_prefix)

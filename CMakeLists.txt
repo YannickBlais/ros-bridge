@@ -19,6 +19,7 @@ add_message_files(
   EgoVehicleControlMaxima.msg
   EgoVehicleControlState.msg
   EgoVehicleControlTarget.msg
+  EzOdometry.msg
 )
 
 generate_messages(

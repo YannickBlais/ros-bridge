@@ -12,6 +12,7 @@ Classes to handle Carla vehicles
 import sys
 import datetime
 import numpy
+import math
 
 from simple_pid import PID
 
@@ -19,6 +20,8 @@ import rospy
 from dynamic_reconfigure.server import Server
 
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import Imu
+from geometry_msgs.msg import Vector3
 from std_msgs.msg import ColorRGBA
 from ackermann_msgs.msg import AckermannDrive
 
@@ -29,6 +32,8 @@ import carla_ros_bridge.physics as phys
 from carla_ros_bridge.msg import CarlaVehicleControl  # pylint: disable=no-name-in-module,import-error
 from carla_ros_bridge.msg import EgoVehicleControlInfo  # pylint: disable=no-name-in-module,import-error
 from carla_ros_bridge.cfg import EgoVehicleControlParameterConfig  # pylint: disable=no-name-in-module,import-error
+from carla_ros_bridge.msg import EzOdometry # pylint: disable=no-name-in-module,import-error
+import carla_ros_bridge.transforms as trans
 
 
 class EgoVehicle(Vehicle):
@@ -97,6 +102,7 @@ class EgoVehicle(Vehicle):
 
         # current values
         self.info.current.time_sec = self.get_current_ros_time().to_sec()
+        self.delta_time = 0
         self.info.current.speed = 0.
         self.info.current.speed_abs = 0.
         self.info.current.accel = 0.
@@ -117,6 +123,10 @@ class EgoVehicle(Vehicle):
         self.info.output.steer = 0.
         self.info.output.reverse = False
         self.info.output.hand_brake = True
+
+        self.prev_pos = None
+        self.prev_speed = None
+        self.steering = None
 
     def get_marker_color(self):
         """
@@ -151,6 +161,7 @@ class EgoVehicle(Vehicle):
 
         self.publish_ros_message(self.topic_name() + "/odometry", odometry)
 
+
     def apply_control(self):
         """
         Apply current control output to CARLA
@@ -177,11 +188,11 @@ class EgoVehicle(Vehicle):
         :return:
         """
         current_time_sec = self.get_current_ros_time().to_sec()
-        delta_time = current_time_sec - self.info.current.time_sec
+        self.delta_time = current_time_sec - self.info.current.time_sec
         current_speed = phys.get_vehicle_speed(self.carla_actor)
-        if delta_time > 0:
+        if self.delta_time > 0:
             delta_speed = current_speed - self.info.current.speed
-            current_accel = delta_speed / delta_time
+            current_accel = delta_speed / self.delta_time
             # average filter
             self.info.current.accel = (self.info.current.accel * 4 + current_accel) / 5
         self.info.current.time_sec = current_time_sec
@@ -210,6 +221,8 @@ class EgoVehicle(Vehicle):
         self.update_current_values()
         self.vehicle_control_cycle()
         self.send_ego_vehicle_control_info_msg()
+        self.send_ego_vehicle_imu_msg()
+        self.send_ego_vehicle_odo_msg()
 
     def send_ego_vehicle_control_info_msg(self):
         """
@@ -221,6 +234,43 @@ class EgoVehicle(Vehicle):
         self.info.output.header = self.info.header
         self.publish_ros_message(
             self.topic_name() + "/ego_vehicle_control_info", self.info)
+
+    def send_ego_vehicle_odo_msg(self):
+        odo = EzOdometry(header=self.get_msg_header())
+        odo.speed = phys.get_vehicle_speed(self.carla_actor)
+        odo.steering = self.steering
+        self.publish_ros_message(self.topic_name() + "/ego_vehicle_odometry", odo)
+
+    def send_ego_vehicle_imu_msg(self):
+        """
+        Function to send sensor_msgs.Imu message.
+
+        :return:
+        """
+        if self.prev_pos is not None and self.prev_speed is not None and self.delta_time is not 0:
+            imu = Imu(header=self.get_msg_header())
+            acc = self.carla_actor.get_acceleration()
+            imu.linear_acceleration = Vector3(acc.x, acc.y, acc.z)
+
+            prev_velocity_norm = math.sqrt(phys.get_vector_length_squared(self.prev_speed))
+            cur_velocity_vector = self.carla_actor.get_velocity()
+            cur_velocity_norm = math.sqrt(phys.get_vector_length_squared(cur_velocity_vector))
+            dot_product = numpy.dot(trans.carla_velocity_to_numpy_vector(cur_velocity_vector),
+                                    trans.carla_velocity_to_numpy_vector(self.prev_speed))
+            velo_mul = prev_velocity_norm * cur_velocity_norm
+            # print("prev_velocity_norm={}, cur_velocity_norm={}, dot_product={}, velo_mul={}".
+            #       format(prev_velocity_norm, cur_velocity_norm, dot_product, velo_mul))
+            if velo_mul < 1e-3:
+                self.steering = 0
+            else:
+                self.steering = math.acos(dot_product / velo_mul)
+            angular_velocity = self.steering / self.delta_time
+            imu.angular_velocity.z = angular_velocity
+
+            self.publish_ros_message(self.topic_name() + "/ego_vehicle_imu", imu)
+
+        self.prev_pos = self.carla_actor.get_location()
+        self.prev_speed = self.carla_actor.get_velocity()
 
 
 class PedalControlVehicle(EgoVehicle):
